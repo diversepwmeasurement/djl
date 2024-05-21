@@ -1,317 +1,484 @@
-name: Native JNI S3 PyTorch
-
-on:
-  workflow_dispatch:
-    inputs:
-      pt_version:
-        description: 'pytorch version'
-        required: false
-      cuda:
-        description: 'CUDA version'
-        required: true
-        default: 'cu121'
-  schedule:
-    - cron: '0 5 * * *'
-
 jobs:
-  build-pytorch-jni-macos:
+  build-pytorch-jni-aarch64:
+    container: amazonlinux:2
     if: github.repository == 'deepjavalibrary/djl'
-    runs-on: macos-13
-
+    needs: create-aarch64-runner
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'corretto'
-          java-version: 17
-      - uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-      - name: Release JNI prep
-        shell: bash
-        run: |
-          PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
-          export PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F '=' '/pytorch_version/ {print $2}')}
-          echo $PYTORCH_VERSION
-          ./gradlew :engines:pytorch:pytorch-native:compileJNI -Ppt_version=$PYTORCH_VERSION
-          ./gradlew -Pjni -Ppt_version=$PYTORCH_VERSION :integration:test "-Dai.djl.default_engine=PyTorch"
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-2
-      - name: Copy files to S3 with the AWS CLI
-        shell: bash
-        run: |
-          PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
-          PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F '=' '/pytorch_version/ {print $2}')}
-          aws s3 sync engines/pytorch/pytorch-native/jnilib s3://djl-ai/publish/pytorch/${PYTORCH_VERSION}/jnilib
-          aws cloudfront create-invalidation --distribution-id E371VB8JQ6NRVY --paths "/pytorch/${PYTORCH_VERSION}/jnilib*"
+    - continue-on-error: true
+      name: Install compiler environment
+      run: 'yum -y update
 
-  build-pytorch-jni-linux:
-    if: github.repository == 'deepjavalibrary/djl'
-    runs-on: ubuntu-latest
-    container: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu20.04
-    steps:
-      - uses: actions/checkout@v3
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'corretto'
-          java-version: 17
-      - uses: actions/cache@v3
-        with:
-          path: ~/.gradle/caches
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-      - name: Install Environment
-        run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y locales curl unzip software-properties-common
-          apt-get install -y python3-pip python3-distutils
-          pip3 install awscli cmake
-          ln -s /usr/local/bin/cmake /usr/bin/cmake
-      - name: Release JNI prep
-        shell: bash
-        run: |
-          PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
-          export PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F '=' '/pytorch_version/ {print $2}')}
-          echo $PYTORCH_VERSION
-          ./gradlew :engines:pytorch:pytorch-native:compileJNI -Ppt_version=$PYTORCH_VERSION
-          ./gradlew -Pjni -Ppt_version=$PYTORCH_VERSION :integration:test "-Dai.djl.default_engine=PyTorch"
-          ./gradlew :engines:pytorch:pytorch-native:cleanJNI
-          export TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0"
-          CUDA_VERSION=${{ github.event.inputs.cuda }}
-          export CUDA_VERSION=${CUDA_VERSION:-cu121}
-          ./gradlew :engines:pytorch:pytorch-native:compileJNI -Pcuda=$CUDA_VERSION -Ppt_version=$PYTORCH_VERSION
-          ./gradlew :engines:pytorch:pytorch-native:cleanJNI
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v3
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-2
-      - name: Copy files to S3 with the AWS CLI
-        run: |
-          PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
-          PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F '=' '/pytorch_version/ {print $2}')}
-          aws s3 sync engines/pytorch/pytorch-native/jnilib s3://djl-ai/publish/pytorch/${PYTORCH_VERSION}/jnilib
-          aws cloudfront create-invalidation --distribution-id E371VB8JQ6NRVY --paths "/pytorch/${PYTORCH_VERSION}/jnilib*"
+        yum -y install patch git cmake3 python3-devel java-17-amazon-corretto-devel
 
-  build-pytorch-jni-precxx11:
-    if: github.repository == 'deepjavalibrary/djl'
-    runs-on: ubuntu-latest
-    container: nvidia/cuda:12.1.1-cudnn8-devel-centos7
-    steps:
-      - name: Install Environment
-        run: |
-          yum -y update
-          yum -y install centos-release-scl-rh epel-release
-          yum -y install devtoolset-9 rh-git218 patch cmake3
-          ln -s /usr/bin/cmake3 /usr/bin/cmake
-          pip3 install awscli --upgrade
-      - uses: actions/checkout@v3
-      - name: Set up JDK 17
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'corretto'
-          java-version: 17
-      - uses: actions/cache@v3
-        with:
-          path: ~/.gradle/caches
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-      - name: Release JNI prep
-        run: |
-          source scl_source enable devtoolset-9 rh-git218 || true
-          PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
-          export PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F '=' '/pytorch_version/ {print $2}')}
-          export PYTORCH_PRECXX11=true
-          echo $PYTORCH_VERSION
-          ./gradlew :engines:pytorch:pytorch-native:compileJNI -Pprecxx11 -Ppt_version=$PYTORCH_VERSION
-          ./gradlew -Pjni -Ppt_version=$PYTORCH_VERSION :integration:test "-Dai.djl.default_engine=PyTorch"
-          ./gradlew :engines:pytorch:pytorch-native:cleanJNI
-          rm -rf ~/.djl.ai
-          export TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0"
-          CUDA_VERSION=${{ github.event.inputs.cuda }}
-          export CUDA_VERSION=${CUDA_VERSION:-cu121}
-          ./gradlew :engines:pytorch:pytorch-native:compileJNI -Pcuda=$CUDA_VERSION -Pprecxx11 -Ppt_version=$PYTORCH_VERSION
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-2
-      - name: Copy files to S3 with the AWS CLI
-        run: |
-          PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
-          PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F '=' '/pytorch_version/ {print $2}')}
-          aws s3 sync engines/pytorch/pytorch-native/jnilib s3://djl-ai/publish/pytorch/${PYTORCH_VERSION}/jnilib
-          aws cloudfront create-invalidation --distribution-id E371VB8JQ6NRVY --paths "/pytorch/${PYTORCH_VERSION}/jnilib*"
+        yum -y install gcc10 gcc10-c++
 
-  build-pytorch-jni-windows:
-    if: github.repository == 'deepjavalibrary/djl'
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'corretto'
-          java-version: 17
-      - uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-      - name: Release CPU JNI
-        shell: cmd
-        run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64
-          gradlew :engines:pytorch:pytorch-native:compileJNI -Ppt_version=${{ github.event.inputs.pt_version }}
-      - name: Install CUDA 11.7
-        shell: cmd
-        run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64
-          curl.exe -L https://developer.download.nvidia.com/compute/cuda/11.7.1/local_installers/cuda_11.7.1_516.94_windows.exe -o cuda.exe
-          curl.exe -L https://developer.download.nvidia.com/compute/redist/cudnn/v8.5.0/local_installers/11.7/cudnn-windows-x86_64-8.5.0.96_cuda11-archive.zip -o cudnn.zip
-          cuda.exe -s
-          unzip.exe cudnn.zip
-          cp.exe -a cudnn*/include cudnn*/lib cudnn*/bin "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.7/"
-          rm.exe -Rf cuda.exe cuda.exe cudnn.zip cudnn*
-      - name: Release cuda11 JNI
-        shell: cmd
-        run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" amd64
-          set "CUDA_PATH=%ProgramFiles%\NVIDIA GPU Computing Toolkit\CUDA\v11.7"
-          set "PATH=%CUDA_PATH%\bin;%CUDA_PATH%\libnvvp;%PATH%"
-          gradlew :engines:pytorch:pytorch-native:cleanJNI :engines:pytorch:pytorch-native:compileJNI -Pcuda=${{ github.event.inputs.cuda }} -Ppt_version=${{ github.event.inputs.pt_version }}
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-2
-      - name: Copy files to S3 with the AWS CLI
-        shell: bash
-        run: |
-          PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
-          PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F '=' '/pytorch_version/ {print $2}')}
-          aws s3 sync engines/pytorch/pytorch-native/jnilib s3://djl-ai/publish/pytorch/${PYTORCH_VERSION}/jnilib
-          aws cloudfront create-invalidation --distribution-id E371VB8JQ6NRVY --paths "/pytorch/${PYTORCH_VERSION}/jnilib*"
+        ln -sf /usr/bin/gcc10-gcc /usr/bin/gcc
 
+        ln -sf /usr/bin/gcc10-cc /usr/bin/cc
+
+        ln -sf /usr/bin/gcc10-g++ /usr/bin/g++
+
+        ln -sf /usr/bin/gcc10-c++ /usr/bin/c++
+
+        ln -sf /usr/bin/gcc10-ar /usr/bin/ar
+
+        ln -sf /usr/bin/cmake3 /usr/bin/cmake
+
+        pip3 install awscli --upgrade
+
+        '
+    - continue-on-error: true
+      uses: actions/checkout@v3
+    - continue-on-error: true
+      name: Release JNI prep
+      run: 'export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.aarch64
+
+        export PATH=$PATH:$JAVA_HOME/bin
+
+        PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
+
+        export PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F
+        ''='' ''/pytorch_version/ {print $2}'')}
+
+        echo $PYTORCH_VERSION
+
+        ./gradlew :engines:pytorch:pytorch-native:compileJNI -Pprecxx11 -Ppt_version=$PYTORCH_VERSION
+
+        ./gradlew -Pjni -Ppt_version=$PYTORCH_VERSION :integration:test "-Dai.djl.default_engine=PyTorch"
+
+        '
+    - continue-on-error: true
+      name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-region: us-east-2
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    - continue-on-error: true
+      name: Copy files to S3 with the AWS CLI
+      run: 'PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
+
+        PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F ''=''
+        ''/pytorch_version/ {print $2}'')}
+
+        aws s3 sync engines/pytorch/pytorch-native/jnilib s3://djl-ai/publish/pytorch/${PYTORCH_VERSION}/jnilib
+
+        aws cloudfront create-invalidation --distribution-id E371VB8JQ6NRVY --paths
+        "/pytorch/${PYTORCH_VERSION}/jnilib*"
+
+        '
+    timeout-minutes: 30
   build-pytorch-jni-arm64-macos:
     if: github.repository == 'deepjavalibrary/djl'
-    runs-on: macos-latest-xlarge
+    runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: 17
-          distribution: corretto
-          architecture: aarch64
-      - uses: actions/cache@v4
-        with:
-          path: ~/.gradle/caches
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-      - name: Release JNI prep
-        shell: bash
-        run: |
-          PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
-          export PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F '=' '/pytorch_version/ {print $2}')}
-          echo $PYTORCH_VERSION
-          ./gradlew :engines:pytorch:pytorch-native:compileJNI -Ppt_version=$PYTORCH_VERSION
-          ./gradlew -Pjni -Ppt_version=$PYTORCH_VERSION :integration:test "-Dai.djl.default_engine=PyTorch"
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-2
-      - name: Copy files to S3 with the AWS CLI
-        shell: bash
-        run: |
-          PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
-          PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F '=' '/pytorch_version/ {print $2}')}
-          aws s3 sync engines/pytorch/pytorch-native/jnilib s3://djl-ai/publish/pytorch/${PYTORCH_VERSION}/jnilib
-          aws cloudfront create-invalidation --distribution-id E371VB8JQ6NRVY --paths "/pytorch/${PYTORCH_VERSION}/jnilib*"
+    - continue-on-error: true
+      uses: actions/checkout@v4
+    - continue-on-error: true
+      name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        architecture: aarch64
+        distribution: corretto
+        java-version: 17
+    - continue-on-error: true
+      uses: actions/cache@v4
+      with:
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+        path: ~/.gradle/caches
+        restore-keys: '${{ runner.os }}-gradle-
 
+          '
+    - continue-on-error: true
+      name: Release JNI prep
+      run: 'PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
+
+        export PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F
+        ''='' ''/pytorch_version/ {print $2}'')}
+
+        echo $PYTORCH_VERSION
+
+        ./gradlew :engines:pytorch:pytorch-native:compileJNI -Ppt_version=$PYTORCH_VERSION
+
+        ./gradlew -Pjni -Ppt_version=$PYTORCH_VERSION :integration:test "-Dai.djl.default_engine=PyTorch"
+
+        '
+      shell: bash
+    - continue-on-error: true
+      name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-region: us-east-2
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    - continue-on-error: true
+      name: Copy files to S3 with the AWS CLI
+      run: 'PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
+
+        PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F ''=''
+        ''/pytorch_version/ {print $2}'')}
+
+        aws s3 sync engines/pytorch/pytorch-native/jnilib s3://djl-ai/publish/pytorch/${PYTORCH_VERSION}/jnilib
+
+        aws cloudfront create-invalidation --distribution-id E371VB8JQ6NRVY --paths
+        "/pytorch/${PYTORCH_VERSION}/jnilib*"
+
+        '
+      shell: bash
+  build-pytorch-jni-linux:
+    container: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu20.04
+    if: github.repository == 'deepjavalibrary/djl'
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      uses: actions/checkout@v3
+    - continue-on-error: true
+      name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: corretto
+        java-version: 17
+    - continue-on-error: true
+      uses: actions/cache@v3
+      with:
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+        path: ~/.gradle/caches
+        restore-keys: '${{ runner.os }}-gradle-
+
+          '
+    - continue-on-error: true
+      name: Install Environment
+      run: 'apt-get update
+
+        DEBIAN_FRONTEND=noninteractive apt-get install -y locales curl unzip software-properties-common
+
+        apt-get install -y python3-pip python3-distutils
+
+        pip3 install awscli cmake
+
+        ln -s /usr/local/bin/cmake /usr/bin/cmake
+
+        '
+    - continue-on-error: true
+      name: Release JNI prep
+      run: 'PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
+
+        export PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F
+        ''='' ''/pytorch_version/ {print $2}'')}
+
+        echo $PYTORCH_VERSION
+
+        ./gradlew :engines:pytorch:pytorch-native:compileJNI -Ppt_version=$PYTORCH_VERSION
+
+        ./gradlew -Pjni -Ppt_version=$PYTORCH_VERSION :integration:test "-Dai.djl.default_engine=PyTorch"
+
+        ./gradlew :engines:pytorch:pytorch-native:cleanJNI
+
+        export TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0"
+
+        CUDA_VERSION=${{ github.event.inputs.cuda }}
+
+        export CUDA_VERSION=${CUDA_VERSION:-cu121}
+
+        ./gradlew :engines:pytorch:pytorch-native:compileJNI -Pcuda=$CUDA_VERSION
+        -Ppt_version=$PYTORCH_VERSION
+
+        ./gradlew :engines:pytorch:pytorch-native:cleanJNI
+
+        '
+      shell: bash
+    - continue-on-error: true
+      name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-region: us-east-2
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    - continue-on-error: true
+      name: Copy files to S3 with the AWS CLI
+      run: 'PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
+
+        PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F ''=''
+        ''/pytorch_version/ {print $2}'')}
+
+        aws s3 sync engines/pytorch/pytorch-native/jnilib s3://djl-ai/publish/pytorch/${PYTORCH_VERSION}/jnilib
+
+        aws cloudfront create-invalidation --distribution-id E371VB8JQ6NRVY --paths
+        "/pytorch/${PYTORCH_VERSION}/jnilib*"
+
+        '
+  build-pytorch-jni-macos:
+    if: github.repository == 'deepjavalibrary/djl'
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      uses: actions/checkout@v4
+    - continue-on-error: true
+      name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: corretto
+        java-version: 17
+    - continue-on-error: true
+      uses: actions/cache@v4
+      with:
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+        path: ~/.gradle/caches
+        restore-keys: '${{ runner.os }}-gradle-
+
+          '
+    - continue-on-error: true
+      name: Release JNI prep
+      run: 'PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
+
+        export PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F
+        ''='' ''/pytorch_version/ {print $2}'')}
+
+        echo $PYTORCH_VERSION
+
+        ./gradlew :engines:pytorch:pytorch-native:compileJNI -Ppt_version=$PYTORCH_VERSION
+
+        ./gradlew -Pjni -Ppt_version=$PYTORCH_VERSION :integration:test "-Dai.djl.default_engine=PyTorch"
+
+        '
+      shell: bash
+    - continue-on-error: true
+      name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-region: us-east-2
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    - continue-on-error: true
+      name: Copy files to S3 with the AWS CLI
+      run: 'PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
+
+        PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F ''=''
+        ''/pytorch_version/ {print $2}'')}
+
+        aws s3 sync engines/pytorch/pytorch-native/jnilib s3://djl-ai/publish/pytorch/${PYTORCH_VERSION}/jnilib
+
+        aws cloudfront create-invalidation --distribution-id E371VB8JQ6NRVY --paths
+        "/pytorch/${PYTORCH_VERSION}/jnilib*"
+
+        '
+      shell: bash
+  build-pytorch-jni-precxx11:
+    container: nvidia/cuda:12.1.1-cudnn8-devel-centos7
+    if: github.repository == 'deepjavalibrary/djl'
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      name: Install Environment
+      run: 'yum -y update
+
+        yum -y install centos-release-scl-rh epel-release
+
+        yum -y install devtoolset-9 rh-git218 patch cmake3
+
+        ln -s /usr/bin/cmake3 /usr/bin/cmake
+
+        pip3 install awscli --upgrade
+
+        '
+    - continue-on-error: true
+      uses: actions/checkout@v3
+    - continue-on-error: true
+      name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        distribution: corretto
+        java-version: 17
+    - continue-on-error: true
+      uses: actions/cache@v3
+      with:
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+        path: ~/.gradle/caches
+        restore-keys: '${{ runner.os }}-gradle-
+
+          '
+    - continue-on-error: true
+      name: Release JNI prep
+      run: 'source scl_source enable devtoolset-9 rh-git218 || true
+
+        PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
+
+        export PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F
+        ''='' ''/pytorch_version/ {print $2}'')}
+
+        export PYTORCH_PRECXX11=true
+
+        echo $PYTORCH_VERSION
+
+        ./gradlew :engines:pytorch:pytorch-native:compileJNI -Pprecxx11 -Ppt_version=$PYTORCH_VERSION
+
+        ./gradlew -Pjni -Ppt_version=$PYTORCH_VERSION :integration:test "-Dai.djl.default_engine=PyTorch"
+
+        ./gradlew :engines:pytorch:pytorch-native:cleanJNI
+
+        rm -rf ~/.djl.ai
+
+        export TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0"
+
+        CUDA_VERSION=${{ github.event.inputs.cuda }}
+
+        export CUDA_VERSION=${CUDA_VERSION:-cu121}
+
+        ./gradlew :engines:pytorch:pytorch-native:compileJNI -Pcuda=$CUDA_VERSION
+        -Pprecxx11 -Ppt_version=$PYTORCH_VERSION
+
+        '
+    - continue-on-error: true
+      name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-region: us-east-2
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    - continue-on-error: true
+      name: Copy files to S3 with the AWS CLI
+      run: 'PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
+
+        PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F ''=''
+        ''/pytorch_version/ {print $2}'')}
+
+        aws s3 sync engines/pytorch/pytorch-native/jnilib s3://djl-ai/publish/pytorch/${PYTORCH_VERSION}/jnilib
+
+        aws cloudfront create-invalidation --distribution-id E371VB8JQ6NRVY --paths
+        "/pytorch/${PYTORCH_VERSION}/jnilib*"
+
+        '
+  build-pytorch-jni-windows:
+    if: github.repository == 'deepjavalibrary/djl'
+    runs-on: self-hosted
+    steps:
+    - continue-on-error: true
+      uses: actions/checkout@v4
+    - continue-on-error: true
+      name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: corretto
+        java-version: 17
+    - continue-on-error: true
+      uses: actions/cache@v4
+      with:
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
+        path: ~/.gradle/caches
+        restore-keys: '${{ runner.os }}-gradle-
+
+          '
+    - continue-on-error: true
+      name: Release CPU JNI
+      run: 'call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
+        amd64
+
+        gradlew :engines:pytorch:pytorch-native:compileJNI -Ppt_version=${{ github.event.inputs.pt_version
+        }}
+
+        '
+      shell: cmd
+    - continue-on-error: true
+      name: Install CUDA 11.7
+      run: 'call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
+        amd64
+
+        curl.exe -L https://developer.download.nvidia.com/compute/cuda/11.7.1/local_installers/cuda_11.7.1_516.94_windows.exe
+        -o cuda.exe
+
+        curl.exe -L https://developer.download.nvidia.com/compute/redist/cudnn/v8.5.0/local_installers/11.7/cudnn-windows-x86_64-8.5.0.96_cuda11-archive.zip
+        -o cudnn.zip
+
+        cuda.exe -s
+
+        unzip.exe cudnn.zip
+
+        cp.exe -a cudnn*/include cudnn*/lib cudnn*/bin "C:/Program Files/NVIDIA GPU
+        Computing Toolkit/CUDA/v11.7/"
+
+        rm.exe -Rf cuda.exe cuda.exe cudnn.zip cudnn*
+
+        '
+      shell: cmd
+    - continue-on-error: true
+      name: Release cuda11 JNI
+      run: 'call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
+        amd64
+
+        set "CUDA_PATH=%ProgramFiles%\NVIDIA GPU Computing Toolkit\CUDA\v11.7"
+
+        set "PATH=%CUDA_PATH%\bin;%CUDA_PATH%\libnvvp;%PATH%"
+
+        gradlew :engines:pytorch:pytorch-native:cleanJNI :engines:pytorch:pytorch-native:compileJNI
+        -Pcuda=${{ github.event.inputs.cuda }} -Ppt_version=${{ github.event.inputs.pt_version
+        }}
+
+        '
+      shell: cmd
+    - continue-on-error: true
+      name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-region: us-east-2
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    - continue-on-error: true
+      name: Copy files to S3 with the AWS CLI
+      run: 'PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
+
+        PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F ''=''
+        ''/pytorch_version/ {print $2}'')}
+
+        aws s3 sync engines/pytorch/pytorch-native/jnilib s3://djl-ai/publish/pytorch/${PYTORCH_VERSION}/jnilib
+
+        aws cloudfront create-invalidation --distribution-id E371VB8JQ6NRVY --paths
+        "/pytorch/${PYTORCH_VERSION}/jnilib*"
+
+        '
+      shell: bash
   create-aarch64-runner:
     if: github.repository == 'deepjavalibrary/djl'
-    runs-on: [ self-hosted, scheduler ]
-    steps:
-      - name: Create new Graviton instance
-        id: create_aarch64
-        run: |
-          cd /home/ubuntu/djl_benchmark_script/scripts
-          token=$( curl -X POST -H "Authorization: token ${{ secrets.ACTION_RUNNER_PERSONAL_TOKEN }}" \
-          https://api.github.com/repos/deepjavalibrary/djl/actions/runners/registration-token \
-          --fail \
-          | jq '.token' | tr -d '"' )
-          ./start_instance.sh action_graviton $token djl
     outputs:
-      aarch64_instance_id: ${{ steps.create_aarch64.outputs.action_graviton_instance_id }}
-
-  build-pytorch-jni-aarch64:
-    if: github.repository == 'deepjavalibrary/djl'
-    runs-on: [ self-hosted, aarch64 ]
-    container: amazonlinux:2
-    timeout-minutes: 30
-    needs: create-aarch64-runner
+      aarch64_instance_id: ${{ steps.create_aarch64.outputs.action_graviton_instance_id
+        }}
+    runs-on: self-hosted
     steps:
-      - name: Install compiler environment
-        run: |
-          yum -y update
-          yum -y install patch git cmake3 python3-devel java-17-amazon-corretto-devel
-          yum -y install gcc10 gcc10-c++
-          ln -sf /usr/bin/gcc10-gcc /usr/bin/gcc
-          ln -sf /usr/bin/gcc10-cc /usr/bin/cc
-          ln -sf /usr/bin/gcc10-g++ /usr/bin/g++
-          ln -sf /usr/bin/gcc10-c++ /usr/bin/c++
-          ln -sf /usr/bin/gcc10-ar /usr/bin/ar
-          ln -sf /usr/bin/cmake3 /usr/bin/cmake
-          pip3 install awscli --upgrade
-      - uses: actions/checkout@v3
-      - name: Release JNI prep
-        run: |
-          export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.aarch64
-          export PATH=$PATH:$JAVA_HOME/bin
-          PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
-          export PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F '=' '/pytorch_version/ {print $2}')}
-          echo $PYTORCH_VERSION
-          ./gradlew :engines:pytorch:pytorch-native:compileJNI -Pprecxx11 -Ppt_version=$PYTORCH_VERSION
-          ./gradlew -Pjni -Ppt_version=$PYTORCH_VERSION :integration:test "-Dai.djl.default_engine=PyTorch"
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-2
-      - name: Copy files to S3 with the AWS CLI
-        run: |
-          PYTORCH_VERSION=${{ github.event.inputs.pt_version }}
-          PYTORCH_VERSION=${PYTORCH_VERSION:-$(cat gradle.properties | awk -F '=' '/pytorch_version/ {print $2}')}
-          aws s3 sync engines/pytorch/pytorch-native/jnilib s3://djl-ai/publish/pytorch/${PYTORCH_VERSION}/jnilib
-          aws cloudfront create-invalidation --distribution-id E371VB8JQ6NRVY --paths "/pytorch/${PYTORCH_VERSION}/jnilib*"
+    - continue-on-error: true
+      id: create_aarch64
+      name: Create new Graviton instance
+      run: 'cd /home/ubuntu/djl_benchmark_script/scripts
 
+        token=$( curl -X POST -H "Authorization: token ${{ secrets.ACTION_RUNNER_PERSONAL_TOKEN
+        }}" \
+
+        https://api.github.com/repos/deepjavalibrary/djl/actions/runners/registration-token
+        \
+
+        --fail \
+
+        | jq ''.token'' | tr -d ''"'' )
+
+        ./start_instance.sh action_graviton $token djl
+
+        '
   stop-runners:
     if: ${{ github.repository == 'deepjavalibrary/djl' && always() }}
-    runs-on: [ self-hosted, scheduler ]
-    needs: [ create-aarch64-runner, build-pytorch-jni-aarch64 ]
+    needs:
+    - create-aarch64-runner
+    - build-pytorch-jni-aarch64
+    runs-on: self-hosted
     steps:
-      - name: Stop all instances
-        run: |
-          cd /home/ubuntu/djl_benchmark_script/scripts
-          instance_id=${{ needs.create-aarch64-runner.outputs.aarch64_instance_id }}
-          ./stop_instance.sh $instance_id
+    - continue-on-error: true
+      name: Stop all instances
+      run: 'cd /home/ubuntu/djl_benchmark_script/scripts
+
+        instance_id=${{ needs.create-aarch64-runner.outputs.aarch64_instance_id }}
+
+        ./stop_instance.sh $instance_id
+
+        '
+name: Native JNI S3 PyTorch
+on:
+  repository_dispatch:
+    types: trigger-ga___native_jni_s3_pytorch.yml
